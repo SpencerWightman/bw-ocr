@@ -6,3 +6,6 @@ edition = "2024"
 [dependencies]
 tokio = { version = "1.44.2", features = ["full"] }
 axum = "0.8.3"
+serde = "1.0.219"
+tracing_subscriber = "0.3.19"
+tracing = "0.1.41"
