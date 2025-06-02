@@ -1,1 +1,8 @@
 /target
+/bin
+/downloads
+.env
+/*.mp4
+/build.rs
+/download-models.sh
+/config.toml
