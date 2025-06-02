@@ -19,9 +19,9 @@ pub fn supplies_diff(c_frame: &SupplyData, n_frame: &SupplyData) -> bool {
     let player2_frame1 = normalize_slash(&c_frame.player2_supply);
     let player2_frame2 = normalize_slash(&n_frame.player2_supply);
     if player1_frame1 != player1_frame2 || player2_frame1 != player2_frame2 {
-        return false;
+        return true;
     }
-    true
+    false
 }
 
 fn normalize_slash(s: &str) -> String {
