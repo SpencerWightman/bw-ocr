@@ -5,7 +5,7 @@ use std::{collections::HashMap, fs, path::Path, process::Command};
 
 use anyhow::{Context, Ok, Result, anyhow};
 use constants::{CONFIG_TOML, FRAMES_DIR, OCR_DIR, ROIS};
-use helpers::{parse_timestamp, supplies_diff};
+use helpers::{find_consistent, parse_timestamp};
 use human_friendly_ids::Id;
 use image::{DynamicImage, GenericImageView, ImageBuffer, Luma, imageops};
 use leptess::{LepTess, Variable};
@@ -59,7 +59,7 @@ fn parse_segments(conf: &Config, video_name: &str) -> Result<Map<String, Value>>
 
         // Extract frames from the segment times and write
         extract_frames(segment, FRAMES_DIR, video_name)?;
-        let mut match_map = parse_frames()?;
+        let match_map = parse_frames()?;
 
         // Map values for output
         seg_map.insert("player1".into(), json!(segment.player1));
@@ -70,11 +70,10 @@ fn parse_segments(conf: &Config, video_name: &str) -> Result<Map<String, Value>>
         seg_map.insert("org".into(), json!(conf.org));
         seg_map.insert("winner".into(), json!(segment.winner));
         seg_map.insert("orgSeason".into(), json!(conf.org_season));
-        seg_map.insert("orgXtra".into(), json!(conf.org_xtra));
 
         // Remove ocr data that does not maintain for 2 seconds
-        remove_inconsistent(&mut match_map);
-        let value = serde_json::to_value(match_map)?;
+        let culled_match_map = remove_inconsistent(match_map)?;
+        let value = serde_json::to_value(culled_match_map)?;
         seg_map.insert("gameData".into(), value);
 
         output.insert(seg_name, Value::Object(seg_map));
@@ -131,8 +130,8 @@ fn parse_frames() -> Result<HashMap<String, SupplyData>> {
         let player2_ocr_txt = parse_text(&img, &ROIS[2])?;
 
         let supply_data = SupplyData {
-            player1_supply: player1_ocr_txt,
-            player2_supply: player2_ocr_txt,
+            player1_supply: Some(player1_ocr_txt),
+            player2_supply: Some(player2_ocr_txt),
         };
 
         data_map.insert(timestamp, supply_data);
@@ -176,25 +175,32 @@ fn parse_text(img: &DynamicImage, roi: &Roi) -> Result<String> {
 }
 
 // Remove ocr data that is not consistent across 2 frames
-fn remove_inconsistent(game_data: &mut HashMap<String, SupplyData>) {
-    let mut inconsistent_game_data = Vec::new();
+fn remove_inconsistent(
+    mut game_data: HashMap<String, SupplyData>,
+) -> Result<HashMap<String, SupplyData>> {
     let mut keys: Vec<_> = game_data.keys().cloned().collect();
     keys.sort();
 
-    for (i, k) in keys.iter().enumerate() {
+    for (i, _k) in keys.iter().enumerate().skip(1) {
         if i + 2 > keys.len() {
             break;
         }
 
         let c_frame = &game_data[&keys[i]];
         let n_frame = &game_data[&keys[i + 1]];
+        let p_frame = &game_data[&keys[i - 1]];
 
-        if supplies_diff(c_frame, n_frame) {
-            inconsistent_game_data.push(k);
+        let consistent_player_supplies = find_consistent(c_frame, n_frame, p_frame)?;
+
+        if let Some(frame) = game_data.get_mut(&keys[i]) {
+            if consistent_player_supplies.0 == 0 {
+                frame.player1_supply = None;
+            }
+            if consistent_player_supplies.1 == 0 {
+                frame.player2_supply = None;
+            }
         }
     }
 
-    for timestamp_key in inconsistent_game_data {
-        game_data.remove(timestamp_key);
-    }
+    Ok(game_data)
 }

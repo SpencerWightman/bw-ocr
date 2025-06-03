@@ -23,8 +23,8 @@ pub struct MatchSegment {
 
 #[derive(Serialize)]
 pub struct SupplyData {
-    pub player1_supply: String,
-    pub player2_supply: String,
+    pub player1_supply: Option<String>,
+    pub player2_supply: Option<String>,
 }
 
 pub struct Roi {

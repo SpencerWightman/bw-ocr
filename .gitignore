@@ -6,3 +6,6 @@
 /build.rs
 /download-models.sh
 /config.toml
+/frames
+/ocr
+/*.json
