@@ -33,13 +33,11 @@ pub fn find_consistent(
     Ok((player1, player2))
 }
 
-fn get_str(supply_opt: &Option<String>) -> String {
-    supply_opt
-        .clone()
-        .unwrap_or_else(|| "1000/1000".to_string())
+fn get_str(supply_opt: &Option<String>) -> &str {
+    supply_opt.as_deref().unwrap_or("0/0")
 }
 
-fn normalize_slash(txt: String) -> Result<String> {
+fn normalize_slash(txt: &str) -> Result<String> {
     Ok(txt
         .split('/')
         .map(str::trim)
