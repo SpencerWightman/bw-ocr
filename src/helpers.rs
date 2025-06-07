@@ -18,28 +18,19 @@ pub fn find_consistent(
     p_frame: &SupplyData,
     c_frame: &SupplyData,
     n_frame: &SupplyData,
-) -> Result<(i32, i32)> {
-    let c1 = normalize_slash(get_str(&c_frame.player1_supply))?;
-    let n1 = normalize_slash(get_str(&n_frame.player1_supply))?;
-    let p1 = normalize_slash(get_str(&p_frame.player1_supply))?;
+) -> Result<(bool, bool)> {
+    let c1 = normalize_slash(get_str(&c_frame.player1supply))?;
+    let n1 = normalize_slash(get_str(&n_frame.player1supply))?;
+    let p1 = normalize_slash(get_str(&p_frame.player1supply))?;
 
-    let c2 = normalize_slash(get_str(&c_frame.player2_supply))?;
-    let n2 = normalize_slash(get_str(&n_frame.player2_supply))?;
-    let p2 = normalize_slash(get_str(&p_frame.player2_supply))?;
+    let c2 = normalize_slash(get_str(&c_frame.player2supply))?;
+    let n2 = normalize_slash(get_str(&n_frame.player2supply))?;
+    let p2 = normalize_slash(get_str(&p_frame.player2supply))?;
 
-    println!("p: {:?}, c: {:?}, n: {:?}", (p2), (c2), (n2));
+    let player1 = (c1 == p1) || (c1 == n1);
+    let player2 = (c2 == p2) || (c2 == n2);
 
-    let mut consistent = (1, 1);
-
-    if c1 != n1 && c1 != p1 {
-        consistent.0 = 0;
-    }
-
-    if c2 != n2 && c2 != p2 {
-        consistent.1 = 0;
-    }
-
-    Ok(consistent)
+    Ok((player1, player2))
 }
 
 fn get_str(supply_opt: &Option<String>) -> String {

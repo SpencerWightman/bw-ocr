@@ -1,7 +1,7 @@
 mod constants;
 mod helpers;
 mod models;
-use std::{collections::HashMap, fs, path::Path, process::Command};
+use std::{collections::BTreeMap, fs, path::Path, process::Command};
 
 use anyhow::{Context, Ok, Result, anyhow};
 use constants::{CONFIG_TOML, FRAMES_DIR, OCR_DIR, ROIS};
@@ -16,7 +16,7 @@ fn main() -> Result<()> {
     let conf: Config = toml::from_str(CONFIG_TOML)?;
     fs::create_dir_all(FRAMES_DIR)?;
     fs::create_dir_all(OCR_DIR)?;
-    let video_name = format!("{}.mp4", conf.yt_url.split_once('?').map(|x| x.1).unwrap());
+    let video_name = format!("{}.mp4", conf.yt_url.split_once('?').map(|s| s.1).unwrap());
 
     // Download yt video
     if !Path::new(&video_name).exists() {
@@ -71,7 +71,7 @@ fn parse_segments(conf: &Config, video_name: &str) -> Result<Map<String, Value>>
         seg_map.insert("winner".into(), json!(segment.winner));
         seg_map.insert("orgSeason".into(), json!(conf.org_season));
 
-        // Remove ocr data that does not maintain for 2 seconds
+        // Remove ocr data that does not maintain across prev or next frame
         let culled_match_map = remove_inconsistent(match_map)?;
         let value = serde_json::to_value(culled_match_map)?;
         seg_map.insert("gameData".into(), value);
@@ -112,8 +112,8 @@ fn extract_frames(segment: &MatchSegment, frames_dir: &str, video_name: &str) ->
     Ok(())
 }
 
-fn parse_frames() -> Result<HashMap<String, SupplyData>> {
-    let mut data_map: HashMap<String, SupplyData> = HashMap::new();
+fn parse_frames() -> Result<BTreeMap<String, SupplyData>> {
+    let mut data_map: BTreeMap<String, SupplyData> = BTreeMap::new();
 
     // Iterate through the extracted frames
     for frame in fs::read_dir(FRAMES_DIR)? {
@@ -130,8 +130,8 @@ fn parse_frames() -> Result<HashMap<String, SupplyData>> {
         let player2_ocr_txt = parse_text(&img, &ROIS[2])?;
 
         let supply_data = SupplyData {
-            player1_supply: Some(player1_ocr_txt),
-            player2_supply: Some(player2_ocr_txt),
+            player1supply: Some(player1_ocr_txt),
+            player2supply: Some(player2_ocr_txt),
         };
 
         data_map.insert(timestamp, supply_data);
@@ -176,28 +176,27 @@ fn parse_text(img: &DynamicImage, roi: &Roi) -> Result<String> {
 
 // Remove ocr data that is not consistent across 2 frames
 fn remove_inconsistent(
-    mut game_data: HashMap<String, SupplyData>,
-) -> Result<HashMap<String, SupplyData>> {
-    let mut keys: Vec<_> = game_data.keys().cloned().collect();
-    keys.sort();
+    mut game_data: BTreeMap<String, SupplyData>,
+) -> Result<BTreeMap<String, SupplyData>> {
+    let keys: Vec<String> = game_data.keys().cloned().collect();
 
-    for (i, _k) in keys.iter().enumerate().skip(1) {
-        if i + 2 > keys.len() {
-            break;
-        }
+    for window in keys.windows(3) {
+        let p_key = &window[0];
+        let c_key = &window[1];
+        let n_key = &window[2];
 
-        let c_frame = &game_data[&keys[i]];
-        let n_frame = &game_data[&keys[i + 1]];
-        let p_frame = &game_data[&keys[i - 1]];
+        let p_frame = &game_data[p_key];
+        let c_frame = &game_data[c_key];
+        let n_frame = &game_data[n_key];
 
-        let consistent_player_supplies = find_consistent(c_frame, n_frame, p_frame)?;
+        let (player1, player2) = find_consistent(p_frame, c_frame, n_frame)?;
 
-        if let Some(frame) = game_data.get_mut(&keys[i]) {
-            if consistent_player_supplies.0 == 0 {
-                frame.player1_supply = None;
+        if let Some(frame) = game_data.get_mut(c_key) {
+            if !player1 {
+                frame.player1supply = None;
             }
-            if consistent_player_supplies.1 == 0 {
-                frame.player2_supply = None;
+            if !player2 {
+                frame.player2supply = None;
             }
         }
     }
