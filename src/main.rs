@@ -46,6 +46,7 @@ fn main() -> Result<()> {
     let json_file_name = format!("{}-{}-{}.json", conf.org, conf.org_season, conf.org_xtra);
     fs::write(&json_file_name, serde_json::to_string_pretty(&data)?)?;
     println!("Finished writing to {}", json_file_name);
+
     Ok(())
 }
 
@@ -58,8 +59,11 @@ fn parse_segments(conf: &Config, video_name: &str) -> Result<Map<String, Value>>
         let mut seg_map = Map::new();
 
         // Extract frames from the segment times and write
-        extract_frames(segment, FRAMES_DIR, video_name)?;
-        let match_map = parse_frames()?;
+        extract_frames(segment, FRAMES_DIR, video_name)
+            .context(format!("extract_frames failed: {seg_name}"))?;
+
+        let match_map =
+            parse_frames().context(format!("parse_frames for segment failed: {seg_name}"))?;
 
         // Map values for output
         seg_map.insert("player1".into(), json!(segment.player1));
@@ -72,7 +76,9 @@ fn parse_segments(conf: &Config, video_name: &str) -> Result<Map<String, Value>>
         seg_map.insert("orgSeason".into(), json!(conf.org_season));
 
         // Remove ocr data that does not maintain across prev or next frame
-        let culled_match_map = remove_inconsistent(match_map)?;
+        let culled_match_map = remove_inconsistent(match_map)
+            .context(format!("remove_inconsistent failed: {seg_name}"))?;
+
         let value = serde_json::to_value(culled_match_map)?;
         seg_map.insert("gameData".into(), value);
 
@@ -84,8 +90,11 @@ fn parse_segments(conf: &Config, video_name: &str) -> Result<Map<String, Value>>
 
 fn extract_frames(segment: &MatchSegment, frames_dir: &str, video_name: &str) -> Result<()> {
     // Get floating seconds from the config start/end times
-    let start_s = parse_timestamp(&segment.start)?;
-    let end_s = parse_timestamp(&segment.end)?;
+    let start_s = parse_timestamp(&segment.start)
+        .context(format!("parse_timestamp failed: {}", segment.start))?;
+
+    let end_s = parse_timestamp(&segment.end)
+        .context(format!("parse_timestamp failed: {}", segment.end))?;
 
     let write_path = format!("{}/frame_%04d.png", frames_dir);
 
@@ -126,8 +135,11 @@ fn parse_frames() -> Result<BTreeMap<String, SupplyData>> {
             continue;
         }
 
-        let player1_ocr_txt = parse_text(&img, &ROIS[1])?;
-        let player2_ocr_txt = parse_text(&img, &ROIS[2])?;
+        let player1_ocr_txt =
+            parse_text(&img, &ROIS[1]).context(format!("parse_text failed: {timestamp}"))?;
+
+        let player2_ocr_txt =
+            parse_text(&img, &ROIS[2]).context(format!("parse_text failed: {timestamp}"))?;
 
         let supply_data = SupplyData {
             player1supply: Some(player1_ocr_txt),
@@ -148,7 +160,8 @@ fn parse_text(img: &DynamicImage, roi: &Roi) -> Result<String> {
 
     // Setup ocr
     let mut ocr = LepTess::new(None, "eng_best")?;
-    ocr.set_variable(Variable::TesseditCharWhitelist, whitelist)?;
+    ocr.set_variable(Variable::TesseditCharWhitelist, whitelist)
+        .context(format!("ocr set variable failed: {}", roi.name))?;
 
     let w = roi.width.min(img.width().saturating_sub(roi.x));
     let h = roi.height.min(img.height().saturating_sub(roi.y));
@@ -168,9 +181,12 @@ fn parse_text(img: &DynamicImage, roi: &Roi) -> Result<String> {
     );
     let id = Id::new(5);
     let path = format!("{}/{}_{}.png", &OCR_DIR, roi.name, id);
-    bw.save(&path)?;
+    bw.save(&path)
+        .context(format!("ocr bw save failed: {}", roi.name))?;
 
-    ocr.set_image(&path)?;
+    ocr.set_image(&path)
+        .context(format!("ocr set image failed: {}", roi.name))?;
+
     Ok(ocr.get_utf8_text()?.trim().to_string())
 }
 
@@ -189,7 +205,8 @@ fn remove_inconsistent(
         let c_frame = &game_data[c_key];
         let n_frame = &game_data[n_key];
 
-        let (player1, player2) = find_consistent(p_frame, c_frame, n_frame)?;
+        let (player1, player2) = find_consistent(p_frame, c_frame, n_frame)
+            .context(format!("find_consistent failed: {}", c_key))?;
 
         if let Some(frame) = game_data.get_mut(c_key) {
             if !player1 {
