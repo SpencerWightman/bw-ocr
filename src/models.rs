@@ -27,7 +27,7 @@ pub struct ConfigMatchSegment {
 pub struct EntryData<'a> {
     #[serde(flatten)]
     pub segment: &'a ConfigMatchSegment,
-    pub game_data: Vec<FrameData>,
+    pub ocr: Vec<FrameData>,
 }
 
 #[derive(Serialize)]

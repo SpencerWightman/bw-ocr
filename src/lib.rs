@@ -46,7 +46,7 @@ pub fn parse_segments<'a>(conf: &'a Config, video_name: &str) -> Result<Vec<Entr
 
         let entry = EntryData {
             segment,
-            game_data: validated_seg_vec,
+            ocr: validated_seg_vec,
         };
         output.push(entry);
     }
