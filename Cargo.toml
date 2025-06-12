@@ -17,11 +17,3 @@ image = "0.24"
 leptess = "0.14"
 clap = { version = "4.0", features = ["derive"] }
 which = "4.3"
-
-[dev-dependencies]
-criterion = "0.6.0"
-
-[[bench]]
-name = "parse_frames"
-path = "benches/parse_frames.rs"
-harness = false
