@@ -36,7 +36,7 @@ fn main() -> Result<()> {
     let data = parse_segments(&conf, &video_name)?;
 
     // Write mapped OCR data
-    let json_file_name = format!("{}-{}-{}.json", conf.org, conf.org_season, conf.org_xtra);
+    let json_file_name = format!("{} {} {}.json", conf.org, conf.org_season, conf.org_xtra);
     fs::write(&json_file_name, serde_json::to_string_pretty(&data)?)?;
     println!("Finished writing to {}", json_file_name);
 

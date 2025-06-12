@@ -7,22 +7,32 @@ pub struct Config {
     pub org: String,
     pub org_season: u8,
     pub org_xtra: u8,
-    pub matches: Vec<MatchSegment>,
+    pub matches: Vec<ConfigMatchSegment>,
 }
 
-#[derive(Deserialize)]
-pub struct MatchSegment {
+#[derive(Serialize, Deserialize)]
+pub struct ConfigMatchSegment {
     pub player1: String,
     pub race1: String,
     pub player2: String,
     pub race2: String,
     pub winner: String,
+    #[serde(skip_serializing)]
     pub start: String,
+    #[serde(skip_serializing)]
     pub end: String,
 }
 
 #[derive(Serialize)]
-pub struct SupplyData {
+pub struct EntryData<'a> {
+    #[serde(flatten)]
+    pub segment: &'a ConfigMatchSegment,
+    pub game_data: Vec<FrameData>,
+}
+
+#[derive(Serialize)]
+pub struct FrameData {
+    pub timestamp: String,
     pub player1supply: Option<String>,
     pub player2supply: Option<String>,
 }

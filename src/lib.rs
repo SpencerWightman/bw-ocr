@@ -1,54 +1,60 @@
 pub mod constants;
 pub mod models;
-use std::{collections::HashMap, fs, process::Command};
+use std::{fs, process::Command};
 
 use anyhow::{Context, Ok, Result, anyhow};
-pub use constants::{CONFIG_TOML, FRAMES_DIR, OCR_DIR, ROIS};
+pub use constants::*;
 use human_friendly_ids::Id;
 use image::{DynamicImage, GenericImageView, ImageBuffer, Luma, imageops};
 use leptess::{LepTess, Variable};
 pub use models::*;
-use serde_json::{Map, Value, json};
 
-pub fn parse_segments(conf: &Config, video_name: &str) -> Result<Map<String, Value>> {
-    let mut output = Map::new();
+fn parse_timestamp(tc: &str) -> Result<usize> {
+    let parts: Vec<_> = tc.split(':').collect();
+    if parts.len() != 3 {
+        return Err(anyhow!("Invalid timecode: {}", tc));
+    }
+    let h: usize = parts[0].parse()?;
+    let m: usize = parts[1].parse()?;
+    let s: usize = parts[2].parse()?;
+    Ok(h * 3600 + m * 60 + s)
+}
+
+fn calc_seg_vec_len(seg_start: &str, seg_end: &str) -> Result<usize> {
+    let end_s = parse_timestamp(seg_end)?;
+    let start_s = parse_timestamp(seg_start)?;
+    Ok(end_s - start_s)
+}
+
+pub fn parse_segments<'a>(conf: &'a Config, video_name: &str) -> Result<Vec<EntryData<'a>>> {
+    let output_len = conf.matches.len();
+    let mut output: Vec<EntryData> = Vec::with_capacity(output_len);
 
     // Iterate through all matches specified in config.toml
-    for (i, segment) in conf.matches.iter().enumerate() {
-        let seg_name = format!("match{}", i + 1);
-        let mut seg_map = Map::new();
+    for segment in &conf.matches {
+        let seg_vec_len = calc_seg_vec_len(&segment.start, &segment.end)?;
+        let seg_vec: Vec<FrameData> = Vec::with_capacity(seg_vec_len);
 
         // Extract frames from the segment times and write
-        extract_frames(segment, FRAMES_DIR, video_name)
-            .context(format!("extract_frames failed: {seg_name}"))?;
+        extract_frames(segment, FRAMES_DIR, video_name)?;
 
-        let match_map =
-            parse_frames().context(format!("parse_frames for segment failed: {seg_name}"))?;
-
-        // Map values for output
-        seg_map.insert("player1".into(), json!(segment.player1));
-        seg_map.insert("player2".into(), json!(segment.player2));
-        seg_map.insert("race1".into(), json!(segment.race1));
-        seg_map.insert("race2".into(), json!(segment.race2));
-        seg_map.insert("dateTime".into(), json!(conf.date));
-        seg_map.insert("org".into(), json!(conf.org));
-        seg_map.insert("winner".into(), json!(segment.winner));
-        seg_map.insert("orgSeason".into(), json!(conf.org_season));
+        // Add ocr data
+        let populated_seg_vec = parse_frames(seg_vec)?;
 
         // Remove ocr data that does not maintain across prev or next frame
-        let culled_match_map = remove_inconsistent(match_map)
-            .context(format!("remove_inconsistent failed: {seg_name}"))?;
+        let validated_seg_vec = remove_inconsistent(populated_seg_vec)?;
 
-        let value = serde_json::to_value(culled_match_map)?;
-        seg_map.insert("gameData".into(), value);
-
-        output.insert(seg_name, Value::Object(seg_map));
+        let entry = EntryData {
+            segment,
+            game_data: validated_seg_vec,
+        };
+        output.push(entry);
     }
 
     Ok(output)
 }
 
-fn extract_frames(segment: &MatchSegment, frames_dir: &str, video_name: &str) -> Result<()> {
+fn extract_frames(segment: &ConfigMatchSegment, frames_dir: &str, video_name: &str) -> Result<()> {
     // Get floating seconds from the config start/end times
     let start_s = parse_timestamp(&segment.start)
         .context(format!("parse_timestamp failed: {}", segment.start))?;
@@ -81,9 +87,7 @@ fn extract_frames(segment: &MatchSegment, frames_dir: &str, video_name: &str) ->
     Ok(())
 }
 
-pub fn parse_frames() -> Result<HashMap<String, SupplyData>> {
-    let mut data_map: HashMap<String, SupplyData> = HashMap::new();
-
+pub fn parse_frames(mut seg_vec: Vec<FrameData>) -> Result<Vec<FrameData>> {
     // Iterate through the extracted frames
     for frame in fs::read_dir(FRAMES_DIR)? {
         let path = frame?.path();
@@ -101,15 +105,16 @@ pub fn parse_frames() -> Result<HashMap<String, SupplyData>> {
         let player2_ocr_txt =
             parse_text(&img, &ROIS[2]).context(format!("parse_text failed: {timestamp}"))?;
 
-        let supply_data = SupplyData {
+        let parsed_data = FrameData {
+            timestamp,
             player1supply: Some(player1_ocr_txt),
             player2supply: Some(player2_ocr_txt),
         };
 
-        data_map.insert(timestamp, supply_data);
+        seg_vec.push(parsed_data);
     }
 
-    Ok(data_map)
+    Ok(seg_vec)
 }
 
 fn parse_text(img: &DynamicImage, roi: &Roi) -> Result<String> {
@@ -151,53 +156,34 @@ fn parse_text(img: &DynamicImage, roi: &Roi) -> Result<String> {
 }
 
 // Remove ocr data that is not consistent across 2 frames
-pub fn remove_inconsistent(
-    mut game_data: HashMap<String, SupplyData>,
-) -> Result<HashMap<String, SupplyData>> {
-    let mut keys: Vec<String> = game_data.keys().cloned().collect();
-    keys.sort_unstable();
+pub fn remove_inconsistent(mut seg_vec: Vec<FrameData>) -> Result<Vec<FrameData>> {
+    let len = seg_vec.len();
+    for i in 1..len - 1 {
+        let p_frame = &seg_vec[0];
+        let c_frame = &seg_vec[i];
+        let n_frame = &seg_vec[i + 1];
 
-    for window in keys.windows(3) {
-        let p_key = &window[0];
-        let c_key = &window[1];
-        let n_key = &window[2];
+        let (player1_valid, player2_valid) =
+            find_consistent(p_frame, c_frame, n_frame).context(format!(
+                "remove_inconsistent failed at timestamp: {}",
+                c_frame.timestamp
+            ))?;
 
-        let p_frame = &game_data[p_key];
-        let c_frame = &game_data[c_key];
-        let n_frame = &game_data[n_key];
-
-        let (player1, player2) = find_consistent(p_frame, c_frame, n_frame)
-            .context(format!("find_consistent failed: {}", c_key))?;
-
-        if let Some(frame) = game_data.get_mut(c_key) {
-            if !player1 {
-                frame.player1supply = None;
-            }
-            if !player2 {
-                frame.player2supply = None;
-            }
+        if !player1_valid {
+            seg_vec[i].player1supply = None;
+        }
+        if !player2_valid {
+            seg_vec[i].player2supply = None;
         }
     }
-
-    Ok(game_data)
-}
-
-pub fn parse_timestamp(tc: &str) -> Result<f64> {
-    let parts: Vec<_> = tc.split(':').collect();
-    if parts.len() != 3 {
-        return Err(anyhow!("Invalid timecode: {}", tc));
-    }
-    let h: f64 = parts[0].parse()?;
-    let m: f64 = parts[1].parse()?;
-    let s: f64 = parts[2].parse()?;
-    Ok(h * 3600.0 + m * 60.0 + s)
+    Ok(seg_vec)
 }
 
 // Do values match next or previous
-pub fn find_consistent(
-    p_frame: &SupplyData,
-    c_frame: &SupplyData,
-    n_frame: &SupplyData,
+fn find_consistent(
+    p_frame: &FrameData,
+    c_frame: &FrameData,
+    n_frame: &FrameData,
 ) -> Result<(bool, bool)> {
     let c1 = normalize_slash(get_str(&c_frame.player1supply))?;
     let n1 = normalize_slash(get_str(&n_frame.player1supply))?;

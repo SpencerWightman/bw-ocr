@@ -3,7 +3,6 @@ use crate::models::Roi;
 pub const CONFIG_TOML: &str = include_str!("../config.toml");
 pub const FRAMES_DIR: &str = "frames";
 pub const OCR_DIR: &str = "ocr";
-
 pub const ROIS: [Roi; 3] = [
     Roi {
         name: "timestamp",
