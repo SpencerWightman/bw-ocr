@@ -9,10 +9,10 @@ use image::{DynamicImage, GenericImageView, ImageBuffer, Luma, imageops};
 use leptess::{LepTess, Variable};
 pub use models::*;
 
-fn parse_timestamp(tc: &str) -> Result<usize> {
-    let parts: Vec<_> = tc.split(':').collect();
+fn parse_timestamp(timestamp: &str) -> Result<usize> {
+    let parts: Vec<_> = timestamp.split(':').collect();
     if parts.len() != 3 {
-        return Err(anyhow!("Invalid timecode: {}", tc));
+        return Err(anyhow!("Invalid timecode: {}", timestamp));
     }
     let h: usize = parts[0].parse()?;
     let m: usize = parts[1].parse()?;
@@ -27,26 +27,27 @@ fn calc_seg_vec_len(seg_start: &str, seg_end: &str) -> Result<usize> {
 }
 
 pub fn parse_segments<'a>(conf: &'a Config, video_name: &str) -> Result<Vec<EntryData<'a>>> {
+    let mut ocr = LepTess::new(None, "eng_best").context("Tesseract init fail")?;
     let output_len = conf.matches.len();
     let mut output: Vec<EntryData> = Vec::with_capacity(output_len);
 
     // Iterate through all matches specified in config.toml
     for segment in &conf.matches {
         let seg_vec_len = calc_seg_vec_len(&segment.start, &segment.end)?;
-        let seg_vec: Vec<FrameData> = Vec::with_capacity(seg_vec_len);
+        let mut seg_vec: Vec<FrameData> = Vec::with_capacity(seg_vec_len);
 
         // Extract frames from the segment times and write
         extract_frames(segment, FRAMES_DIR, video_name)?;
 
         // Add ocr data
-        let populated_seg_vec = parse_frames(seg_vec)?;
+        parse_frames(&mut seg_vec, &mut ocr)?;
 
         // Remove ocr data that does not maintain across prev or next frame
-        let validated_seg_vec = remove_inconsistent(populated_seg_vec)?;
+        remove_inconsistent(&mut seg_vec)?;
 
         let entry = EntryData {
             segment,
-            ocr: validated_seg_vec,
+            ocr: seg_vec,
         };
         output.push(entry);
     }
@@ -87,12 +88,12 @@ fn extract_frames(segment: &ConfigMatchSegment, frames_dir: &str, video_name: &s
     Ok(())
 }
 
-pub fn parse_frames(mut seg_vec: Vec<FrameData>) -> Result<Vec<FrameData>> {
+pub fn parse_frames(seg_vec: &mut Vec<FrameData>, ocr: &mut LepTess) -> Result<()> {
     // Iterate through the extracted frames
     for frame in fs::read_dir(FRAMES_DIR)? {
         let path = frame?.path();
         let img = image::open(&path)?;
-        let timestamp = parse_text(&img, &ROIS[0])?;
+        let timestamp = parse_text(&img, &ROIS[0], ocr)?;
 
         // This could happen if SOOP briefly switched to a shot of the crowd
         if timestamp.is_empty() {
@@ -100,10 +101,10 @@ pub fn parse_frames(mut seg_vec: Vec<FrameData>) -> Result<Vec<FrameData>> {
         }
 
         let player1_ocr_txt =
-            parse_text(&img, &ROIS[1]).context(format!("parse_text failed: {timestamp}"))?;
+            parse_text(&img, &ROIS[1], ocr).context(format!("parse_text failed: {timestamp}"))?;
 
         let player2_ocr_txt =
-            parse_text(&img, &ROIS[2]).context(format!("parse_text failed: {timestamp}"))?;
+            parse_text(&img, &ROIS[2], ocr).context(format!("parse_text failed: {timestamp}"))?;
 
         let parsed_data = FrameData {
             timestamp,
@@ -114,17 +115,16 @@ pub fn parse_frames(mut seg_vec: Vec<FrameData>) -> Result<Vec<FrameData>> {
         seg_vec.push(parsed_data);
     }
 
-    Ok(seg_vec)
+    Ok(())
 }
 
-fn parse_text(img: &DynamicImage, roi: &Roi) -> Result<String> {
+fn parse_text(img: &DynamicImage, roi: &Roi, ocr: &mut LepTess) -> Result<String> {
     let whitelist = match roi.name {
         "timestamp" => "0123456789:",
         _ => "0123456789/",
     };
 
     // Setup ocr
-    let mut ocr = LepTess::new(None, "eng_best")?;
     ocr.set_variable(Variable::TesseditCharWhitelist, whitelist)
         .context(format!("ocr set variable failed: {}", roi.name))?;
 
@@ -156,7 +156,7 @@ fn parse_text(img: &DynamicImage, roi: &Roi) -> Result<String> {
 }
 
 // Remove ocr data that is not consistent across 2 frames
-pub fn remove_inconsistent(mut seg_vec: Vec<FrameData>) -> Result<Vec<FrameData>> {
+pub fn remove_inconsistent(seg_vec: &mut [FrameData]) -> Result<()> {
     let len = seg_vec.len();
     for i in 1..len - 1 {
         let p_frame = &seg_vec[0];
@@ -176,7 +176,7 @@ pub fn remove_inconsistent(mut seg_vec: Vec<FrameData>) -> Result<Vec<FrameData>
             seg_vec[i].player2supply = None;
         }
     }
-    Ok(seg_vec)
+    Ok(())
 }
 
 // Do values match next or previous
