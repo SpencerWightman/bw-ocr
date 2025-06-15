@@ -3,10 +3,11 @@ use serde::{Deserialize, Serialize};
 #[derive(Deserialize)]
 pub struct Config {
     pub yt_url: String,
+    pub video_name: String,
     pub date: String,
     pub org: String,
     pub org_season: u8,
-    pub org_xtra: u8,
+    pub org_xtra: String,
     pub matches: Vec<ConfigMatchSegment>,
 }
 

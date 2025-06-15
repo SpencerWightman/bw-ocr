@@ -1,18 +1,22 @@
 pub mod constants;
 pub mod models;
-use std::{fs, process::Command};
+use std::{
+    io::{BufReader, Cursor},
+    process::{Command, Stdio},
+};
 
 use anyhow::{Context, Ok, Result, anyhow};
 pub use constants::*;
-use human_friendly_ids::Id;
-use image::{DynamicImage, GenericImageView, ImageBuffer, Luma, imageops};
+use image::ImageDecoder;
+use image::codecs::pnm::PnmDecoder;
+use image::{DynamicImage, GenericImageView, ImageBuffer, ImageOutputFormat, Luma, imageops};
 use leptess::{LepTess, Variable};
 pub use models::*;
 
 fn parse_timestamp(timestamp: &str) -> Result<usize> {
     let parts: Vec<_> = timestamp.split(':').collect();
     if parts.len() != 3 {
-        return Err(anyhow!("Invalid timecode: {}", timestamp));
+        return Err(anyhow!("Invalid timestamp: {}", timestamp));
     }
     let h: usize = parts[0].parse()?;
     let m: usize = parts[1].parse()?;
@@ -20,31 +24,26 @@ fn parse_timestamp(timestamp: &str) -> Result<usize> {
     Ok(h * 3600 + m * 60 + s)
 }
 
-fn calc_seg_vec_len(seg_start: &str, seg_end: &str) -> Result<usize> {
-    let end_s = parse_timestamp(seg_end)?;
-    let start_s = parse_timestamp(seg_start)?;
-    Ok(end_s - start_s)
-}
-
-pub fn parse_segments<'a>(conf: &'a Config, video_name: &str) -> Result<Vec<EntryData<'a>>> {
-    let mut ocr = LepTess::new(None, "eng_best").context("Tesseract init fail")?;
+pub fn parse_segments<'a>(conf: &'a Config) -> Result<Vec<EntryData<'a>>> {
+    let mut ocr = LepTess::new(None, "eng_best").context("Tesseract init")?;
     let output_len = conf.matches.len();
     let mut output: Vec<EntryData> = Vec::with_capacity(output_len);
 
     // Iterate through all matches specified in config.toml
     for segment in &conf.matches {
-        let seg_vec_len = calc_seg_vec_len(&segment.start, &segment.end)?;
+        let start_s = parse_timestamp(&segment.start)?;
+        let end_s = parse_timestamp(&segment.end)?;
+        let seg_vec_len = end_s - start_s;
         let mut seg_vec: Vec<FrameData> = Vec::with_capacity(seg_vec_len);
-
-        // Extract frames from the segment times and write
-        extract_frames(segment, FRAMES_DIR, video_name)?;
-
-        // Add ocr data
-        parse_frames(&mut seg_vec, &mut ocr)?;
-
-        // Remove ocr data that does not maintain across prev or next frame
-        remove_inconsistent(&mut seg_vec)?;
-
+        parse_segment(
+            &mut seg_vec,
+            &mut ocr,
+            seg_vec_len,
+            start_s,
+            end_s,
+            &conf.video_name,
+        )?;
+        nullify_inconsistent(&mut seg_vec)?;
         let entry = EntryData {
             segment,
             ocr: seg_vec,
@@ -55,67 +54,77 @@ pub fn parse_segments<'a>(conf: &'a Config, video_name: &str) -> Result<Vec<Entr
     Ok(output)
 }
 
-fn extract_frames(segment: &ConfigMatchSegment, frames_dir: &str, video_name: &str) -> Result<()> {
-    // Get floating seconds from the config start/end times
-    let start_s = parse_timestamp(&segment.start)
-        .context(format!("parse_timestamp failed: {}", segment.start))?;
-
-    let end_s = parse_timestamp(&segment.end)
-        .context(format!("parse_timestamp failed: {}", segment.end))?;
-
-    let write_path = format!("{}/frame_%04d.png", frames_dir);
-
-    let status = Command::new("ffmpeg")
+pub fn parse_segment(
+    seg_vec: &mut Vec<FrameData>,
+    ocr: &mut LepTess,
+    seg_vec_len: usize,
+    start_s: usize,
+    end_s: usize,
+    video_name: &str,
+) -> Result<()> {
+    let mut ffmpeg = Command::new("ffmpeg")
         .args([
-            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
             "-ss",
-            &format!("{:.3}", start_s),
+            &format!("{start_s}"),
             "-to",
-            &format!("{:.3}", end_s),
+            &format!("{end_s}"),
             "-i",
             video_name,
             "-vf",
             "fps=1",
-            &write_path,
+            "-f",
+            "image2pipe",
+            "-vcodec",
+            "ppm",
+            "-",
         ])
-        .status()
-        .context("Frame extraction failed")?;
+        .stdout(Stdio::piped())
+        .spawn()
+        .context("ffmpeg spawn")?;
 
-    if !status.success() {
-        return Err(anyhow::anyhow!("Frame extraction issue"));
-    }
+    let stdout = ffmpeg.stdout.take().unwrap();
+    let mut reader = BufReader::new(stdout);
 
-    Ok(())
-}
+    // Loop the number of seconds in the segment
+    for _ in 0..seg_vec_len {
+        let decoder = PnmDecoder::new(&mut reader)?;
+        let (w, h) = decoder.dimensions();
+        let ctype = decoder.color_type();
+        let bpp = ctype.bytes_per_pixel();
 
-pub fn parse_frames(seg_vec: &mut Vec<FrameData>, ocr: &mut LepTess) -> Result<()> {
-    // Iterate through the extracted frames
-    for frame in fs::read_dir(FRAMES_DIR)? {
-        let path = frame?.path();
-        let img = image::open(&path)?;
+        let mut raw = vec![0u8; w as usize * h as usize * bpp as usize];
+        decoder.read_image(&mut raw)?;
+
+        let img: DynamicImage =
+            DynamicImage::ImageRgb8(image::RgbImage::from_raw(w, h, raw).expect("wrong size"));
+
         let timestamp = parse_text(&img, &ROIS[0], ocr)?;
-
-        // This could happen if SOOP briefly switched to a shot of the crowd
         if timestamp.is_empty() {
             continue;
         }
 
-        let player1_ocr_txt =
-            parse_text(&img, &ROIS[1], ocr).context(format!("parse_text failed: {timestamp}"))?;
+        let player1_ocr =
+            parse_text(&img, &ROIS[1], ocr).context(format!("parse_text failed: {}", timestamp))?;
+        let player2_ocr =
+            parse_text(&img, &ROIS[2], ocr).context(format!("parse_text failed: {}", timestamp))?;
 
-        let player2_ocr_txt =
-            parse_text(&img, &ROIS[2], ocr).context(format!("parse_text failed: {timestamp}"))?;
-
-        let parsed_data = FrameData {
+        // Some is annoying here because it's always Some and we have to read the string out later
+        seg_vec.push(FrameData {
             timestamp,
-            player1supply: Some(player1_ocr_txt),
-            player2supply: Some(player2_ocr_txt),
-        };
-
-        seg_vec.push(parsed_data);
+            player1supply: Some(player1_ocr),
+            player2supply: Some(player2_ocr),
+        });
     }
 
-    Ok(())
+    let status = ffmpeg.wait()?;
+    if !status.success() {
+        Err(anyhow::anyhow!("ffmpeg exit"))
+    } else {
+        Ok(())
+    }
 }
 
 fn parse_text(img: &DynamicImage, roi: &Roi, ocr: &mut LepTess) -> Result<String> {
@@ -128,14 +137,14 @@ fn parse_text(img: &DynamicImage, roi: &Roi, ocr: &mut LepTess) -> Result<String
     ocr.set_variable(Variable::TesseditCharWhitelist, whitelist)
         .context(format!("ocr set variable failed: {}", roi.name))?;
 
-    let w = roi.width.min(img.width().saturating_sub(roi.x));
-    let h = roi.height.min(img.height().saturating_sub(roi.y));
-
     // Crop, zoom, black-white
-    let roi_crop = img.view(roi.x, roi.y, w, h).to_image();
-    let enlarged_roi_crop =
-        imageops::resize(&roi_crop, w * 4, h * 4, imageops::FilterType::Lanczos3);
-    const THRESH: u8 = 130;
+    let roi_crop = img.view(roi.x, roi.y, roi.width, roi.height).to_image();
+    let enlarged_roi_crop = imageops::resize(
+        &roi_crop,
+        roi.width * 4,
+        roi.height * 4,
+        imageops::FilterType::Lanczos3,
+    );
     let bw: ImageBuffer<Luma<u8>, _> = ImageBuffer::from_fn(
         enlarged_roi_crop.width(),
         enlarged_roi_crop.height(),
@@ -144,19 +153,21 @@ fn parse_text(img: &DynamicImage, roi: &Roi, ocr: &mut LepTess) -> Result<String
             if l > THRESH { Luma([255]) } else { Luma([0]) }
         },
     );
-    let id = Id::new(5);
-    let path = format!("{}/{}_{}.png", &OCR_DIR, roi.name, id);
-    bw.save(&path)
-        .context(format!("ocr bw save failed: {}", roi.name))?;
 
-    ocr.set_image(&path)
+    // Cursor to keep in memory
+    let mut cursor = Cursor::new(Vec::new());
+    bw.write_to(&mut cursor, ImageOutputFormat::Png)
+        .context("Encoding ROI to PNG")?;
+
+    let png_data = cursor.into_inner();
+    ocr.set_image_from_mem(&png_data)
         .context(format!("ocr set image failed: {}", roi.name))?;
 
     Ok(ocr.get_utf8_text()?.trim().to_string())
 }
 
 // Remove ocr data that is not consistent across 2 frames
-pub fn remove_inconsistent(seg_vec: &mut [FrameData]) -> Result<()> {
+pub fn nullify_inconsistent(seg_vec: &mut [FrameData]) -> Result<()> {
     let len = seg_vec.len();
     for i in 1..len - 1 {
         let p_frame = &seg_vec[0];
@@ -199,6 +210,7 @@ fn find_consistent(
     Ok((player1, player2))
 }
 
+// This must be destroyed
 fn get_str(supply_opt: &Option<String>) -> &str {
     supply_opt.as_deref().unwrap_or("0/0")
 }
