@@ -26,6 +26,8 @@ fn parse_timestamp(timestamp: &str) -> Result<usize> {
 
 pub fn parse_segments<'a>(conf: &'a Config) -> Result<Vec<EntryData<'a>>> {
     let mut ocr = LepTess::new(None, "eng_best").context("Tesseract init")?;
+    ocr.set_variable(Variable::TesseditPagesegMode, "8")
+        .context("page_seg_mode")?;
     let output_len = conf.matches.len();
     let mut output: Vec<EntryData> = Vec::with_capacity(output_len);
 
@@ -135,7 +137,7 @@ fn parse_text(img: &DynamicImage, roi: &Roi, ocr: &mut LepTess) -> Result<String
 
     // Setup ocr
     ocr.set_variable(Variable::TesseditCharWhitelist, whitelist)
-        .context(format!("ocr set variable failed: {}", roi.name))?;
+        .context(format!("Ocr set variable failed: {}", roi.name))?;
 
     // Crop, zoom, black-white
     let roi_crop = img.view(roi.x, roi.y, roi.width, roi.height).to_image();
@@ -161,9 +163,14 @@ fn parse_text(img: &DynamicImage, roi: &Roi, ocr: &mut LepTess) -> Result<String
 
     let png_data = cursor.into_inner();
     ocr.set_image_from_mem(&png_data)
-        .context(format!("ocr set image failed: {}", roi.name))?;
+        .context(format!("Ocr set image failed: {}", roi.name))?;
 
-    Ok(ocr.get_utf8_text()?.trim().to_string())
+    let raw = ocr.get_utf8_text()?;
+    let cleaned = raw
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect::<String>();
+    Ok(cleaned)
 }
 
 // Remove ocr data that is not consistent across 2 frames
@@ -196,29 +203,16 @@ fn find_consistent(
     c_frame: &FrameData,
     n_frame: &FrameData,
 ) -> Result<(bool, bool)> {
-    let c1 = normalize_slash(get_str(&c_frame.player1supply))?;
-    let n1 = normalize_slash(get_str(&n_frame.player1supply))?;
-    let p1 = normalize_slash(get_str(&p_frame.player1supply))?;
+    let c1 = &c_frame.player1supply;
+    let n1 = &n_frame.player1supply;
+    let p1 = &p_frame.player1supply;
 
-    let c2 = normalize_slash(get_str(&c_frame.player2supply))?;
-    let n2 = normalize_slash(get_str(&n_frame.player2supply))?;
-    let p2 = normalize_slash(get_str(&p_frame.player2supply))?;
+    let c2 = &c_frame.player2supply;
+    let n2 = &n_frame.player2supply;
+    let p2 = &p_frame.player2supply;
 
     let player1 = (c1 == p1) || (c1 == n1);
     let player2 = (c2 == p2) || (c2 == n2);
 
     Ok((player1, player2))
-}
-
-// This must be destroyed
-fn get_str(supply_opt: &Option<String>) -> &str {
-    supply_opt.as_deref().unwrap_or("0/0")
-}
-
-fn normalize_slash(txt: &str) -> Result<String> {
-    Ok(txt
-        .split('/')
-        .map(str::trim)
-        .collect::<Vec<&str>>()
-        .join("/"))
 }
