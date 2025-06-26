@@ -36,7 +36,7 @@ fn main() -> Result<()> {
     // Write extracted game data
     let json_file_name = format!("{} {} {}.json", conf.org, conf.org_season, conf.org_xtra);
     fs::write(&json_file_name, serde_json::to_string_pretty(&data)?)?;
-    println!("JSON{}", json_file_name);
+    println!("JSON :: {}", json_file_name);
 
     Ok(())
 }

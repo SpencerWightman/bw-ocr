@@ -9,3 +9,5 @@
 /frames
 /ocr
 /*.json
+/bpatterns
+/cropped

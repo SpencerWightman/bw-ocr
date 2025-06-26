@@ -113,7 +113,6 @@ pub fn parse_segment(
         let player2_ocr =
             parse_text(&img, &ROIS[2], ocr).context(format!("parse_text failed: {}", timestamp))?;
 
-        // Some is annoying here because it's always Some and we have to read the string out later
         seg_vec.push(FrameData {
             timestamp,
             player1supply: Some(player1_ocr),
@@ -156,7 +155,7 @@ fn parse_text(img: &DynamicImage, roi: &Roi, ocr: &mut LepTess) -> Result<String
         },
     );
 
-    // Cursor to keep in memory
+    // Cursor to keep in memory -- new Vec should have capacity
     let mut cursor = Cursor::new(Vec::new());
     bw.write_to(&mut cursor, ImageOutputFormat::Png)
         .context("Encoding ROI to PNG")?;
