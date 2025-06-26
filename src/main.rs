@@ -1,44 +1,42 @@
 use std::{fs, path::Path, process::Command};
 
 use anyhow::{Context, Ok, Result};
-use bwl_meta::constants::{CONFIG_TOML, FRAMES_DIR, OCR_DIR};
+use bwl_meta::constants::CONFIG_TOML;
 use bwl_meta::models::Config;
 use bwl_meta::parse_segments;
 
 fn main() -> Result<()> {
     let conf: Config = toml::from_str(CONFIG_TOML)?;
-    fs::create_dir_all(FRAMES_DIR)?;
-    fs::create_dir_all(OCR_DIR)?;
-    let video_name = format!("{}.mp4", conf.yt_url.split_once('?').map(|s| s.1).unwrap());
 
     // Download yt video
-    if !Path::new(&video_name).exists() {
+    if !Path::new(&conf.video_name).exists() {
         let status = Command::new("yt-dlp")
             .args([
                 "-f",
                 "bestvideo[height<=1080]",
                 "--no-playlist",
+                "--no-audio",
                 "-o",
-                &video_name,
-                "--merge-output-format",
+                &conf.video_name,
+                "--remux-video",
                 "mp4",
                 &conf.yt_url,
             ])
             .status()
-            .context("yt-dlp failed")?;
+            .context("yt-dlp")?;
 
         if !status.success() {
-            return Err(anyhow::anyhow!("yt-dlp issue"));
+            return Err(anyhow::anyhow!("yt-dlp"));
         }
     }
 
     // Parsing loop
-    let data = parse_segments(&conf, &video_name)?;
+    let data = parse_segments(&conf)?;
 
-    // Write mapped OCR data
-    let json_file_name = format!("{}-{}-{}.json", conf.org, conf.org_season, conf.org_xtra);
+    // Write extracted game data
+    let json_file_name = format!("{} {} {}.json", conf.org, conf.org_season, conf.org_xtra);
     fs::write(&json_file_name, serde_json::to_string_pretty(&data)?)?;
-    println!("Finished writing to {}", json_file_name);
+    println!("JSON{}", json_file_name);
 
     Ok(())
 }
