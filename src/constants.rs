@@ -1,6 +1,5 @@
 use crate::models::Roi;
 pub const THRESH: u8 = 130;
-pub const CONFIG_TOML: &str = include_str!("../config.toml");
 pub const ROIS: [Roi; 3] = [
     Roi {
         name: "timestamp",

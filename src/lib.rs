@@ -1,16 +1,17 @@
 pub mod constants;
 pub mod models;
-use std::{
-    io::{BufReader, Cursor},
-    process::{Command, Stdio},
-};
+use std::{io::Cursor, time::Duration};
 
 use anyhow::{Context, Ok, Result, anyhow};
 pub use constants::*;
-use image::ImageDecoder;
-use image::codecs::pnm::PnmDecoder;
-use image::{DynamicImage, GenericImageView, ImageBuffer, ImageOutputFormat, Luma, imageops};
+use image::{DynamicImage, ImageOutputFormat};
 use leptess::{LepTess, Variable};
+use pixelpipe::{
+    config::Roi as PixelPipeRoi,
+    crop,
+    ffmpeg::ffmpeg_frames,
+    preprocess,
+};
 pub use models::*;
 
 fn parse_timestamp(timestamp: &str) -> Result<usize> {
@@ -64,44 +65,12 @@ pub fn parse_segment(
     end_s: usize,
     video_name: &str,
 ) -> Result<()> {
-    let mut ffmpeg = Command::new("ffmpeg")
-        .args([
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-ss",
-            &format!("{start_s}"),
-            "-to",
-            &format!("{end_s}"),
-            "-i",
-            video_name,
-            "-vf",
-            "fps=1",
-            "-f",
-            "image2pipe",
-            "-vcodec",
-            "ppm",
-            "-",
-        ])
-        .stdout(Stdio::piped())
-        .spawn()
-        .context("ffmpeg spawn")?;
+    let ranges = [Duration::from_secs(start_s as u64)..=Duration::from_secs(end_s as u64)];
+    let mut frames = ffmpeg_frames(video_name, 1, Some(&ranges)).context("ffmpeg decode")?;
 
-    let stdout = ffmpeg.stdout.take().unwrap();
-    let mut reader = BufReader::new(stdout);
-
-    // Loop the number of seconds in the segment
-    for _ in 0..seg_vec_len {
-        let decoder = PnmDecoder::new(&mut reader)?;
-        let (w, h) = decoder.dimensions();
-        let ctype = decoder.color_type();
-        let bpp = ctype.bytes_per_pixel();
-
-        let mut raw = vec![0u8; w as usize * h as usize * bpp as usize];
-        decoder.read_image(&mut raw)?;
-
-        let img: DynamicImage =
-            DynamicImage::ImageRgb8(image::RgbImage::from_raw(w, h, raw).expect("wrong size"));
+    for frame in frames.by_ref().take(seg_vec_len) {
+        let frame = frame?;
+        let img = frame.image;
 
         let timestamp = parse_text(&img, &ROIS[0], ocr)?;
         if timestamp.is_empty() {
@@ -120,12 +89,7 @@ pub fn parse_segment(
         });
     }
 
-    let status = ffmpeg.wait()?;
-    if !status.success() {
-        Err(anyhow::anyhow!("ffmpeg exit"))
-    } else {
-        Ok(())
-    }
+    Ok(())
 }
 
 fn parse_text(img: &DynamicImage, roi: &Roi, ocr: &mut LepTess) -> Result<String> {
@@ -134,35 +98,26 @@ fn parse_text(img: &DynamicImage, roi: &Roi, ocr: &mut LepTess) -> Result<String
         _ => "0123456789/",
     };
 
-    // Setup ocr
     ocr.set_variable(Variable::TesseditCharWhitelist, whitelist)
         .context(format!("Ocr set variable failed: {}", roi.name))?;
 
-    // Crop, zoom, black-white
-    let roi_crop = img.view(roi.x, roi.y, roi.width, roi.height).to_image();
-    let enlarged_roi_crop = imageops::resize(
-        &roi_crop,
+    let roi = roi_to_pixelpipe(roi);
+    let roi_crop = crop::crop_image(img, &roi);
+    let enlarged = preprocess::resize_luma(
+        &preprocess::to_luma(&roi_crop),
         roi.width * 4,
         roi.height * 4,
-        imageops::FilterType::Lanczos3,
     );
-    let bw: ImageBuffer<Luma<u8>, _> = ImageBuffer::from_fn(
-        enlarged_roi_crop.width(),
-        enlarged_roi_crop.height(),
-        |x, y| {
-            let l = enlarged_roi_crop.get_pixel(x, y)[0];
-            if l > THRESH { Luma([255]) } else { Luma([0]) }
-        },
-    );
+    let bw = preprocess::threshold_luma(&enlarged, THRESH);
 
-    // Cursor to keep in memory -- new Vec should have capacity
     let mut cursor = Cursor::new(Vec::new());
-    bw.write_to(&mut cursor, ImageOutputFormat::Png)
+    DynamicImage::ImageLuma8(bw)
+        .write_to(&mut cursor, ImageOutputFormat::Png)
         .context("Encoding ROI to PNG")?;
 
     let png_data = cursor.into_inner();
     ocr.set_image_from_mem(&png_data)
-        .context(format!("Ocr set image failed: {}", roi.name))?;
+        .context(format!("Ocr set image failed: {:?}", roi.name))?;
 
     let raw = ocr.get_utf8_text()?;
     let cleaned = raw
@@ -170,6 +125,16 @@ fn parse_text(img: &DynamicImage, roi: &Roi, ocr: &mut LepTess) -> Result<String
         .filter(|c| !c.is_whitespace())
         .collect::<String>();
     Ok(cleaned)
+}
+
+fn roi_to_pixelpipe(roi: &Roi) -> PixelPipeRoi {
+    PixelPipeRoi {
+        name: Some(roi.name.to_string()),
+        x: roi.x,
+        y: roi.y,
+        width: roi.width,
+        height: roi.height,
+    }
 }
 
 // Remove ocr data that is not consistent across 2 frames

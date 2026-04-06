@@ -1,12 +1,12 @@
 use std::{fs, path::Path, process::Command};
 
 use anyhow::{Context, Ok, Result};
-use bwl_meta::constants::CONFIG_TOML;
 use bwl_meta::models::Config;
 use bwl_meta::parse_segments;
 
 fn main() -> Result<()> {
-    let conf: Config = toml::from_str(CONFIG_TOML)?;
+    let config_text = fs::read_to_string("config.toml").context("reading config.toml")?;
+    let conf: Config = toml::from_str(&config_text)?;
 
     // Download yt video
     if !Path::new(&conf.video_name).exists() {
