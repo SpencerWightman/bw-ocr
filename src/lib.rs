@@ -1,11 +1,11 @@
 pub mod constants;
 pub mod models;
-use std::{io::Cursor, time::Duration};
+pub mod recognizer;
+use std::time::Duration;
 
 use anyhow::{Context, Ok, Result, anyhow};
 pub use constants::*;
-use image::{DynamicImage, ImageOutputFormat};
-use leptess::{LepTess, Variable};
+use image::DynamicImage;
 use pixelpipe::{
     config::Roi as PixelPipeRoi,
     crop,
@@ -13,6 +13,7 @@ use pixelpipe::{
     preprocess,
 };
 pub use models::*;
+use recognizer::recognize_text;
 
 fn parse_timestamp(timestamp: &str) -> Result<usize> {
     let parts: Vec<_> = timestamp.split(':').collect();
@@ -26,32 +27,20 @@ fn parse_timestamp(timestamp: &str) -> Result<usize> {
 }
 
 pub fn parse_segments<'a>(conf: &'a Config) -> Result<Vec<EntryData<'a>>> {
-    let mut ocr = LepTess::new(None, "eng_best").context("Tesseract init")?;
-    ocr.set_variable(Variable::TesseditPagesegMode, "8")
-        .context("page_seg_mode")?;
     let output_len = conf.matches.len();
     let mut output: Vec<EntryData> = Vec::with_capacity(output_len);
 
-    // Iterate through all matches specified in config.toml
     for segment in &conf.matches {
         let start_s = parse_timestamp(&segment.start)?;
         let end_s = parse_timestamp(&segment.end)?;
         let seg_vec_len = end_s - start_s;
         let mut seg_vec: Vec<FrameData> = Vec::with_capacity(seg_vec_len);
-        parse_segment(
-            &mut seg_vec,
-            &mut ocr,
-            seg_vec_len,
-            start_s,
-            end_s,
-            &conf.video_name,
-        )?;
+        parse_segment(&mut seg_vec, seg_vec_len, start_s, end_s, &conf.video_name)?;
         nullify_inconsistent(&mut seg_vec)?;
-        let entry = EntryData {
+        output.push(EntryData {
             segment,
             ocr: seg_vec,
-        };
-        output.push(entry);
+        });
     }
 
     Ok(output)
@@ -59,7 +48,6 @@ pub fn parse_segments<'a>(conf: &'a Config) -> Result<Vec<EntryData<'a>>> {
 
 pub fn parse_segment(
     seg_vec: &mut Vec<FrameData>,
-    ocr: &mut LepTess,
     seg_vec_len: usize,
     start_s: usize,
     end_s: usize,
@@ -72,15 +60,13 @@ pub fn parse_segment(
         let frame = frame?;
         let img = frame.image;
 
-        let timestamp = parse_text(&img, &ROIS[0], ocr)?;
+        let timestamp = parse_text(&img, &ROIS[0]);
         if timestamp.is_empty() {
             continue;
         }
 
-        let player1_ocr =
-            parse_text(&img, &ROIS[1], ocr).context(format!("parse_text failed: {}", timestamp))?;
-        let player2_ocr =
-            parse_text(&img, &ROIS[2], ocr).context(format!("parse_text failed: {}", timestamp))?;
+        let player1_ocr = parse_text(&img, &ROIS[1]);
+        let player2_ocr = parse_text(&img, &ROIS[2]);
 
         seg_vec.push(FrameData {
             timestamp,
@@ -92,15 +78,7 @@ pub fn parse_segment(
     Ok(())
 }
 
-fn parse_text(img: &DynamicImage, roi: &Roi, ocr: &mut LepTess) -> Result<String> {
-    let whitelist = match roi.name {
-        "timestamp" => "0123456789:",
-        _ => "0123456789/",
-    };
-
-    ocr.set_variable(Variable::TesseditCharWhitelist, whitelist)
-        .context(format!("Ocr set variable failed: {}", roi.name))?;
-
+fn parse_text(img: &DynamicImage, roi: &Roi) -> String {
     let roi = roi_to_pixelpipe(roi);
     let roi_crop = crop::crop_image(img, &roi);
     let enlarged = preprocess::resize_luma(
@@ -109,22 +87,7 @@ fn parse_text(img: &DynamicImage, roi: &Roi, ocr: &mut LepTess) -> Result<String
         roi.height * 4,
     );
     let bw = preprocess::threshold_luma(&enlarged, THRESH);
-
-    let mut cursor = Cursor::new(Vec::new());
-    DynamicImage::ImageLuma8(bw)
-        .write_to(&mut cursor, ImageOutputFormat::Png)
-        .context("Encoding ROI to PNG")?;
-
-    let png_data = cursor.into_inner();
-    ocr.set_image_from_mem(&png_data)
-        .context(format!("Ocr set image failed: {:?}", roi.name))?;
-
-    let raw = ocr.get_utf8_text()?;
-    let cleaned = raw
-        .chars()
-        .filter(|c| !c.is_whitespace())
-        .collect::<String>();
-    Ok(cleaned)
+    recognize_text(roi.name.as_deref().unwrap_or(""), &bw)
 }
 
 fn roi_to_pixelpipe(roi: &Roi) -> PixelPipeRoi {
@@ -137,7 +100,6 @@ fn roi_to_pixelpipe(roi: &Roi) -> PixelPipeRoi {
     }
 }
 
-// Remove ocr data that is not consistent across 2 frames
 pub fn nullify_inconsistent(seg_vec: &mut [FrameData]) -> Result<()> {
     let len = seg_vec.len();
     for i in 1..len - 1 {
@@ -161,7 +123,6 @@ pub fn nullify_inconsistent(seg_vec: &mut [FrameData]) -> Result<()> {
     Ok(())
 }
 
-// Do values match next or previous
 fn find_consistent(
     p_frame: &FrameData,
     c_frame: &FrameData,
