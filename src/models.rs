@@ -31,8 +31,17 @@ pub struct EntryData<'a> {
     pub ocr: Vec<FrameData>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct FrameData {
+    pub timestamp: String,
+    pub player1supply: Option<String>,
+    pub player2supply: Option<String>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct GoldSetEntry {
+    pub video: String,
+    pub frame_time: String,
     pub timestamp: String,
     pub player1supply: Option<String>,
     pub player2supply: Option<String>,

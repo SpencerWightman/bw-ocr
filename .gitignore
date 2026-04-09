@@ -8,6 +8,8 @@
 /config.toml
 /frames
 /ocr
+/debug-glyphs
+/debug-rois
 /*.json
 /bpatterns
 /cropped
