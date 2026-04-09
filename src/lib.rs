@@ -49,7 +49,6 @@ where
         parse_segment(&mut seg_vec, seg_vec_len, start_s, end_s, &conf.video_name, || {
             on_frame(segment_idx);
         })?;
-        nullify_inconsistent(&mut seg_vec)?;
         output.push(EntryData {
             segment,
             ocr: seg_vec,
@@ -122,8 +121,12 @@ pub fn dump_frame_debug(video_name: &str, second: usize, out_dir: &Path) -> Resu
 
         match roi.name {
             "timestamp" => frame_data.timestamp = prepared.text,
-            "player1supply" => frame_data.player1supply = none_if_empty(prepared.text),
-            "player2supply" => frame_data.player2supply = none_if_empty(prepared.text),
+            "player1supply" => {
+                frame_data.player1supply = none_if_empty(prepared.text);
+            }
+            "player2supply" => {
+                frame_data.player2supply = none_if_empty(prepared.text);
+            }
             _ => {}
         }
     }
@@ -207,79 +210,7 @@ fn roi_to_pixelpipe(roi: &Roi) -> PixelPipeRoi {
     }
 }
 
-pub fn nullify_inconsistent(seg_vec: &mut [FrameData]) -> Result<()> {
-    let len = seg_vec.len();
-    if len < 3 {
-        return Ok(());
-    }
-
-    for i in 1..len - 1 {
-        let p_frame = &seg_vec[i - 1];
-        let c_frame = &seg_vec[i];
-        let n_frame = &seg_vec[i + 1];
-
-        let (player1_valid, player2_valid) =
-            find_consistent(p_frame, c_frame, n_frame).context(format!(
-                "remove_inconsistent failed at timestamp: {}",
-                c_frame.timestamp
-            ))?;
-
-        if !player1_valid {
-            seg_vec[i].player1supply = None;
-        }
-        if !player2_valid {
-            seg_vec[i].player2supply = None;
-        }
-    }
-    Ok(())
-}
-
-fn find_consistent(
-    p_frame: &FrameData,
-    c_frame: &FrameData,
-    n_frame: &FrameData,
-) -> Result<(bool, bool)> {
-    let c1 = &c_frame.player1supply;
-    let n1 = &n_frame.player1supply;
-    let p1 = &p_frame.player1supply;
-
-    let c2 = &c_frame.player2supply;
-    let n2 = &n_frame.player2supply;
-    let p2 = &p_frame.player2supply;
-
-    let player1 = (c1 == p1) || (c1 == n1);
-    let player2 = (c2 == p2) || (c2 == n2);
-
-    Ok((player1, player2))
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    #[test]
-    fn nullify_inconsistent_uses_previous_frame() {
-        let mut frames = vec![
-            FrameData {
-                timestamp: "00:57".to_string(),
-                player1supply: Some("9/9".to_string()),
-                player2supply: Some("9/9".to_string()),
-            },
-            FrameData {
-                timestamp: "00:58".to_string(),
-                player1supply: Some("10/9".to_string()),
-                player2supply: Some("10/9".to_string()),
-            },
-            FrameData {
-                timestamp: "00:59".to_string(),
-                player1supply: Some("10/9".to_string()),
-                player2supply: Some("10/9".to_string()),
-            },
-        ];
-
-        nullify_inconsistent(&mut frames).unwrap();
-
-        assert_eq!(frames[1].player1supply.as_deref(), Some("10/9"));
-        assert_eq!(frames[1].player2supply.as_deref(), Some("10/9"));
-    }
+    // Integration tests live in main.rs and recognizer.rs.
 }

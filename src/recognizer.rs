@@ -242,17 +242,7 @@ fn decode_supply_pattern(glyphs: &[DebugGlyphScores], slash_positions: &[bool]) 
 
 fn choose_better_supply(left: Option<String>, right: Option<String>) -> Option<String> {
     match (left, right) {
-        (Some(a), Some(b)) => {
-            let (a_used, a_cap) = parse_supply_numbers(&a)?;
-            let (b_used, b_cap) = parse_supply_numbers(&b)?;
-            let a_valid = a_used <= a_cap;
-            let b_valid = b_used <= b_cap;
-            match (a_valid, b_valid) {
-                (true, false) => Some(a),
-                (false, true) => Some(b),
-                _ => Some(a),
-            }
-        }
+        (Some(a), Some(_b)) => Some(a),
         (Some(a), None) => Some(a),
         (None, Some(b)) => Some(b),
         (None, None) => None,
@@ -260,12 +250,8 @@ fn choose_better_supply(left: Option<String>, right: Option<String>) -> Option<S
 }
 
 fn validate_supply(text: &str) -> Option<String> {
-    let (used, cap) = parse_supply_numbers(text)?;
-    if used <= cap {
-        Some(text.to_string())
-    } else {
-        None
-    }
+    parse_supply_numbers(text)?;
+    Some(text.to_string())
 }
 
 fn parse_supply_numbers(text: &str) -> Option<(u16, u16)> {
